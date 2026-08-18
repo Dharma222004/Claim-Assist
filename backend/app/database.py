@@ -3,7 +3,11 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    _has_dotenv = True
+except ImportError:
+    _has_dotenv = False
 
 from sqlalchemy import (
     create_engine, Integer, String, Float, DateTime, Text, BigInteger
@@ -14,9 +18,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker,
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = BASE_DIR.parent
 
-for env_file in [PROJECT_ROOT / ".env", BASE_DIR / ".env"]:
-    if env_file.exists():
-        load_dotenv(env_file, override=True)
+if _has_dotenv:
+    for env_file in [PROJECT_ROOT / ".env", BASE_DIR / ".env"]:
+        if env_file.exists():
+            load_dotenv(env_file, override=True)
 
 DEFAULT_PG_URL = "postgresql+psycopg://postgres:password@localhost:5432/final_anomaly"
 

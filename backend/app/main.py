@@ -68,7 +68,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for frontend integration
+# Enable CORS for frontend integration (supporting local dev and cloud deployment domains)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -79,10 +79,42 @@ app.add_middleware(
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ],
+    allow_origin_regex=r"^https?:\/\/.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/", tags=["Status"])
+def root_status():
+    """Root entry point confirming backend is running successfully."""
+    return {
+        "status": "online",
+        "message": "Final Anomaly Detection System Backend is running successfully.",
+        "version": "2.1.0",
+        "docs": "/docs",
+        "health": "/api/health"
+    }
+
+
+@app.get("/api", tags=["Status"])
+@app.get("/api/", tags=["Status"])
+def api_root_status():
+    """API entry point confirming backend API is running successfully."""
+    return {
+        "status": "online",
+        "message": "Final Anomaly Detection System Backend API is running successfully.",
+        "version": "2.1.0",
+        "docs": "/docs",
+        "health": "/api/health"
+    }
+
+
+@app.get("/health", response_model=HealthResponse, tags=["Status"])
+def get_health_root():
+    """Root health check alias for cloud orchestrators (e.g. AWS/Render/Railway/GCP)."""
+    return get_health()
 
 
 

@@ -6,12 +6,11 @@ import threading
 import urllib.request
 import urllib.error
 from typing import Dict, Any, Optional
-from dotenv import load_dotenv
-
-from app.llm_prompts import SYSTEM_PROMPT, build_evidence_user_prompt
-
-# Load environment variables
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
