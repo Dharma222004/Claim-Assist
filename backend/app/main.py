@@ -263,7 +263,7 @@ async def simulate_stream_event(db: Session = Depends(get_db)):
 @app.post("/api/batch-predict", response_model=BatchPredictionResponse)
 async def batch_predict(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Batch authorization CSV upload ingestion endpoint using exact same inference pipeline."""
-    if not file.filename.endswith(".csv"):
+    if not file.filename or not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are supported.")
 
     try:
@@ -281,7 +281,7 @@ async def batch_predict(file: UploadFile = File(...), db: Session = Depends(get_
             "summary": summary
         })
 
-        return BatchPredictionResponse(summary=summary, results=results)
+        return BatchPredictionResponse(summary=summary, results=results)  # type: ignore
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CSV Batch Processing Error: {str(e)}")
 
@@ -363,10 +363,8 @@ def get_data_quality_report(
     db: Session = Depends(get_db)
 ):
     """Retrieve structured data quality analysis report (with PostgreSQL caching)."""
-    mc = max_chunks.default if hasattr(max_chunks, "default") else max_chunks
-    fr = force_refresh.default if hasattr(force_refresh, "default") else force_refresh
-    mc = int(mc) if isinstance(mc, (int, str)) and str(mc).isdigit() else 3
-    fr = bool(fr)
+    mc = int(max_chunks)
+    fr = bool(force_refresh)
 
     def _compute():
         dq_engine = CMSDataQualityEngine()
@@ -387,8 +385,7 @@ def refresh_data_quality_report(
     db: Session = Depends(get_db)
 ):
     """Explicitly recompute and refresh the Data Quality audit report in PostgreSQL cache."""
-    mc = max_chunks.default if hasattr(max_chunks, "default") else max_chunks
-    mc = int(mc) if isinstance(mc, (int, str)) and str(mc).isdigit() else 3
+    mc = int(max_chunks)
     return get_data_quality_report(max_chunks=mc, force_refresh=True, db=db)
 
 
@@ -399,10 +396,8 @@ def get_freshness_report(
     db: Session = Depends(get_db)
 ):
     """Retrieve data freshness and ingestion timing report (with PostgreSQL caching)."""
-    mc = max_chunks.default if hasattr(max_chunks, "default") else max_chunks
-    fr = force_refresh.default if hasattr(force_refresh, "default") else force_refresh
-    mc = int(mc) if isinstance(mc, (int, str)) and str(mc).isdigit() else 3
-    fr = bool(fr)
+    mc = int(max_chunks)
+    fr = bool(force_refresh)
 
     def _compute():
         freshness_engine = CMSFreshnessEngine()
@@ -425,8 +420,7 @@ def refresh_freshness_report(
     db: Session = Depends(get_db)
 ):
     """Explicitly recompute and refresh Freshness audit report in PostgreSQL cache."""
-    mc = max_chunks.default if hasattr(max_chunks, "default") else max_chunks
-    mc = int(mc) if isinstance(mc, (int, str)) and str(mc).isdigit() else 3
+    mc = int(max_chunks)
     return get_freshness_report(max_chunks=mc, force_refresh=True, db=db)
 
 
@@ -436,8 +430,7 @@ def get_cross_domain_report(
     db: Session = Depends(get_db)
 ):
     """Retrieve cross-domain consistency audit report (with PostgreSQL caching)."""
-    fr = force_refresh.default if hasattr(force_refresh, "default") else force_refresh
-    fr = bool(fr)
+    fr = bool(force_refresh)
 
     def _compute():
         cross_domain_engine = CMSCrossDomainEngine()
@@ -466,8 +459,7 @@ def get_decision_impact_report(
     db: Session = Depends(get_db)
 ):
     """Retrieve downstream decision impact analysis report (with PostgreSQL caching)."""
-    fr = force_refresh.default if hasattr(force_refresh, "default") else force_refresh
-    fr = bool(fr)
+    fr = bool(force_refresh)
 
     def _compute():
         dq_engine = CMSDataQualityEngine()
@@ -510,8 +502,7 @@ def get_care_management_signals(
     db: Session = Depends(get_db)
 ):
     """Retrieve operational care management utilization signals (with PostgreSQL caching)."""
-    fr = force_refresh.default if hasattr(force_refresh, "default") else force_refresh
-    fr = bool(fr)
+    fr = bool(force_refresh)
 
     def _compute():
         care_engine = CMSCareManagementEngine()

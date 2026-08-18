@@ -1,9 +1,12 @@
-@"
 .env
 .env.*
 !.env.example
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.db
+*.sqlite
+*.sqlite3
 .venv/
 venv/
 node_modules/
@@ -12,4 +15,4 @@ dist/
 build/
 .vscode/
 scratch/
-"@ | Out-File -Encoding utf8 .gitignore
+.pytest_cache/

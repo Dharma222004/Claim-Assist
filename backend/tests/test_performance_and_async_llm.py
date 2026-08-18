@@ -2,13 +2,21 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.database import get_db, SessionLocal, init_db, Base, engine
+from app.database import get_db, SessionLocal, init_db, Base, engine, AuditCacheRecord
 from app.llm_service import ASYNC_EXPLANATIONS
 
-@pytest.fixture(autouse=True, scope="module")
-def setup_test_db():
+@pytest.fixture(autouse=True)
+def setup_test_db_and_cache():
     init_db()
     Base.metadata.create_all(bind=engine)
+    session = SessionLocal()
+    try:
+        session.query(AuditCacheRecord).delete()
+        session.commit()
+    except Exception:
+        session.rollback()
+    finally:
+        session.close()
     yield
 
 client = TestClient(app)

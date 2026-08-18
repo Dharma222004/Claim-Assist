@@ -6,9 +6,9 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, DateTime, Text, BigInteger
+    create_engine, Integer, String, Float, DateTime, Text, BigInteger
 )
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 
 # Load environment variables from .env (project root or final_anomaly_system)
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -18,85 +18,83 @@ for env_file in [PROJECT_ROOT / ".env", BASE_DIR / ".env"]:
     if env_file.exists():
         load_dotenv(env_file, override=True)
 
-LOCAL_SQLITE_PATH = BASE_DIR / "final_anomaly.db"
 DEFAULT_PG_URL = "postgresql+psycopg://postgres:password@localhost:5432/final_anomaly"
 
 # Read DATABASE_URL from environment variable
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_PG_URL)
 
 
+def normalize_postgres_url(url: str) -> str:
+    """
+    Ensure the connection URL uses a supported PostgreSQL dialect for SQLAlchemy + psycopg.
+    Normalizes 'postgres://' (common in cloud deployments: Supabase/Neon/Render/Railway) to 'postgresql+psycopg://'.
+    """
+    cleaned = url.strip()
+    if cleaned.startswith("postgres://"):
+        cleaned = cleaned.replace("postgres://", "postgresql+psycopg://", 1)
+    elif cleaned.startswith("postgresql://") and "+psycopg" not in cleaned:
+        cleaned = cleaned.replace("postgresql://", "postgresql+psycopg://", 1)
+    return cleaned
+
+
 def create_db_engine(url: str):
-    """Create SQLAlchemy engine with appropriate connection parameters."""
-    if "sqlite" in url:
-        connect_args = {"check_same_thread": False}
-        eng = create_engine(url, connect_args=connect_args, echo=False)
-        try:
-            from sqlalchemy import text
-            with eng.connect() as conn:
-                conn.execute(text("PRAGMA journal_mode=WAL;"))
-        except Exception:
-            pass
-        return eng
-    else:
-        # PostgreSQL configuration with 3s connect_timeout
-        return create_engine(
-            url,
-            connect_args={"connect_timeout": 3},
-            pool_pre_ping=True,
-            pool_size=10,
-            max_overflow=20,
-            echo=False
-        )
+    """Create PostgreSQL SQLAlchemy engine with connection pooling and timeouts."""
+    normalized_url = normalize_postgres_url(url)
+    if not (normalized_url.startswith("postgresql://") or normalized_url.startswith("postgresql+")):
+        raise ValueError(f"Invalid DATABASE_URL scheme for '{url}'. PostgreSQL is exclusively supported.")
+
+    return create_engine(
+        normalized_url,
+        connect_args={"connect_timeout": 5},
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20,
+        echo=False
+    )
 
 
-# Initialize engine & SessionLocal with fallback
-try:
-    engine = create_db_engine(DATABASE_URL)
-    with engine.connect() as conn:
-        pass
-except Exception as e:
-    FALLBACK_URL = f"sqlite:///{LOCAL_SQLITE_PATH.as_posix()}"
-    print(f"Primary database connection failed ({e}). Falling back to SQLite: {FALLBACK_URL}")
-    DATABASE_URL = FALLBACK_URL
-    engine = create_db_engine(DATABASE_URL)
-
+# Initialize PostgreSQL engine & SessionLocal
+engine = create_db_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+
+
+class Base(DeclarativeBase):
+    pass
 
 
 class AuthorizationRecord(Base):
     """SQLAlchemy ORM model for authorization predictions & hybrid risk evaluations."""
     __tablename__ = "authorization_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    auth_id = Column(String(64), index=True, nullable=False)
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    auth_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     # Base input summary
-    ml_req_units = Column(Float, default=0.0)
-    ml_aprvd_units = Column(Float, default=0.0)
-    ml_latency_hours = Column(Float, default=0.0)
-    ml_bene_age = Column(Float, default=0.0)
-    ml_prov_partd_cost = Column(Float, default=0.0)
+    ml_req_units: Mapped[float] = mapped_column(Float, default=0.0)
+    ml_aprvd_units: Mapped[float] = mapped_column(Float, default=0.0)
+    ml_latency_hours: Mapped[float] = mapped_column(Float, default=0.0)
+    ml_bene_age: Mapped[float] = mapped_column(Float, default=0.0)
+    ml_prov_partd_cost: Mapped[float] = mapped_column(Float, default=0.0)
 
     # ML Inference Results
-    prediction = Column(String(16), nullable=False)        # "NORMAL" or "ANOMALY"
-    probability = Column(Float, nullable=False)            # 0.0 to 1.0
-    ml_risk_level = Column(String(16), nullable=False)      # "LOW", "MEDIUM", "HIGH", "CRITICAL"
+    prediction: Mapped[str] = mapped_column(String(16), nullable=False)        # "NORMAL" or "ANOMALY"
+    probability: Mapped[float] = mapped_column(Float, nullable=False)            # 0.0 to 1.0
+    ml_risk_level: Mapped[str] = mapped_column(String(16), nullable=False)      # "LOW", "MEDIUM", "HIGH", "CRITICAL"
 
     # Business Rules & SLA Evaluation
-    rule_violations_count = Column(Integer, default=0)
-    sla_risk = Column(String(16), nullable=False)           # "LOW", "MEDIUM", "HIGH", "CRITICAL"
-    final_priority = Column(String(16), nullable=False)     # "LOW", "MEDIUM", "HIGH", "CRITICAL"
+    rule_violations_count: Mapped[int] = mapped_column(Integer, default=0)
+    sla_risk: Mapped[str] = mapped_column(String(16), nullable=False)           # "LOW", "MEDIUM", "HIGH", "CRITICAL"
+    final_priority: Mapped[str] = mapped_column(String(16), nullable=False)     # "LOW", "MEDIUM", "HIGH", "CRITICAL"
 
     # Explanations & Performance
-    reasons_json = Column(Text, default="[]")
-    inference_latency_ms = Column(Float, default=0.0)
+    reasons_json: Mapped[Optional[str]] = mapped_column(Text, default="[]")
+    inference_latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
 
     @property
     def reasons(self) -> List[str]:
         try:
-            return json.loads(self.reasons_json or "[]")
+            return json.loads(str(self.reasons_json or "[]"))
         except Exception:
             return []
 
@@ -105,10 +103,11 @@ class AuthorizationRecord(Base):
         self.reasons_json = json.dumps(val or [])
 
     def to_dict(self) -> Dict[str, Any]:
+        ts_val = self.timestamp
         return {
             "id": self.id,
             "auth_id": self.auth_id,
-            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "timestamp": ts_val.isoformat() if ts_val is not None else None,
             "ml_req_units": self.ml_req_units,
             "ml_aprvd_units": self.ml_aprvd_units,
             "ml_latency_hours": self.ml_latency_hours,
@@ -129,21 +128,22 @@ class CMSFreshnessRecord(Base):
     """SQLAlchemy ORM model for storing CMS raw dataset ingestion and freshness metadata."""
     __tablename__ = "cms_freshness_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    dataset_name = Column(String(64), index=True, nullable=False)
-    source_file = Column(String(128), nullable=False)
-    reporting_period = Column(String(32), nullable=False)
-    file_size_bytes = Column(BigInteger, default=0)
-    file_modified_time = Column(String(64), nullable=True)
-    latest_data_date = Column(String(32), nullable=True)
-    rows_available = Column(BigInteger, default=0)
-    rows_evaluated = Column(BigInteger, default=0)
-    coverage_percentage = Column(Float, default=0.0)
-    ingestion_duration_ms = Column(Float, default=0.0)
-    freshness_status = Column(String(32), nullable=False)
-    audited_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    dataset_name: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    source_file: Mapped[str] = mapped_column(String(128), nullable=False)
+    reporting_period: Mapped[str] = mapped_column(String(32), nullable=False)
+    file_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    file_modified_time: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    latest_data_date: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    rows_available: Mapped[int] = mapped_column(BigInteger, default=0)
+    rows_evaluated: Mapped[int] = mapped_column(BigInteger, default=0)
+    coverage_percentage: Mapped[float] = mapped_column(Float, default=0.0)
+    ingestion_duration_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    freshness_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    audited_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     def to_dict(self) -> Dict[str, Any]:
+        aud_val = self.audited_at
         return {
             "id": self.id,
             "dataset_name": self.dataset_name,
@@ -157,7 +157,7 @@ class CMSFreshnessRecord(Base):
             "coverage_percentage": self.coverage_percentage,
             "ingestion_duration_ms": self.ingestion_duration_ms,
             "freshness_status": self.freshness_status,
-            "audited_at": self.audited_at.isoformat() if self.audited_at else None,
+            "audited_at": aud_val.isoformat() if aud_val is not None else None,
         }
 
 
@@ -165,27 +165,28 @@ class CMSCrossDomainRecord(Base):
     """SQLAlchemy ORM model for storing CMS cross-domain consistency evaluation results."""
     __tablename__ = "cms_cross_domain_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    check_name = Column(String(64), index=True, nullable=False)
-    source_dataset = Column(String(64), nullable=False)
-    target_dataset = Column(String(64), nullable=False)
-    key_relationship_used = Column(String(128), nullable=False)
-    status = Column(String(64), nullable=False)
-    finding_type = Column(String(64), default="INFORMATIONAL")
-    evaluation_mode = Column(String(32), default="SAMPLE")
-    rows_available = Column(BigInteger, default=0)
-    rows_evaluated = Column(BigInteger, default=0)
-    coverage_percentage = Column(Float, default=0.0)
-    records_checked = Column(BigInteger, default=0)
-    actionable_violations = Column(BigInteger, default=0)
-    expected_differences = Column(BigInteger, default=0)
-    informational_findings = Column(BigInteger, default=0)
-    violation_rate = Column(Float, default=0.0)
-    severity = Column(String(16), nullable=False)
-    explanation = Column(Text, nullable=False)
-    audited_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    check_name: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    source_dataset: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_dataset: Mapped[str] = mapped_column(String(64), nullable=False)
+    key_relationship_used: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    finding_type: Mapped[str] = mapped_column(String(64), default="INFORMATIONAL")
+    evaluation_mode: Mapped[str] = mapped_column(String(32), default="SAMPLE")
+    rows_available: Mapped[int] = mapped_column(BigInteger, default=0)
+    rows_evaluated: Mapped[int] = mapped_column(BigInteger, default=0)
+    coverage_percentage: Mapped[float] = mapped_column(Float, default=0.0)
+    records_checked: Mapped[int] = mapped_column(BigInteger, default=0)
+    actionable_violations: Mapped[int] = mapped_column(BigInteger, default=0)
+    expected_differences: Mapped[int] = mapped_column(BigInteger, default=0)
+    informational_findings: Mapped[int] = mapped_column(BigInteger, default=0)
+    violation_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    audited_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     def to_dict(self) -> Dict[str, Any]:
+        aud_val = self.audited_at
         return {
             "id": self.id,
             "check_name": self.check_name,
@@ -205,7 +206,7 @@ class CMSCrossDomainRecord(Base):
             "violation_rate": self.violation_rate,
             "severity": self.severity,
             "explanation": self.explanation,
-            "audited_at": self.audited_at.isoformat() if self.audited_at else None,
+            "audited_at": aud_val.isoformat() if aud_val is not None else None,
         }
 
 
@@ -213,16 +214,17 @@ class CMSDecisionImpactRecord(Base):
     """SQLAlchemy ORM model for decision impact mapping results."""
     __tablename__ = "decision_impact_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    impact_area = Column(String(64), index=True, nullable=False)
-    severity = Column(String(16), nullable=False)
-    source_issue = Column(String(128), nullable=False)
-    reason = Column(Text, nullable=False)
-    confidence_score = Column(Float, default=1.0)
-    recommended_action = Column(Text, nullable=False)
-    audited_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    impact_area: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_issue: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Float, default=1.0)
+    recommended_action: Mapped[str] = mapped_column(Text, nullable=False)
+    audited_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     def to_dict(self) -> Dict[str, Any]:
+        aud_val = self.audited_at
         return {
             "id": self.id,
             "impact_area": self.impact_area,
@@ -231,7 +233,7 @@ class CMSDecisionImpactRecord(Base):
             "reason": self.reason,
             "confidence_score": self.confidence_score,
             "recommended_action": self.recommended_action,
-            "audited_at": self.audited_at.isoformat() if self.audited_at else None,
+            "audited_at": aud_val.isoformat() if aud_val is not None else None,
         }
 
 
@@ -239,15 +241,16 @@ class CMSCareManagementSignalRecord(Base):
     """SQLAlchemy ORM model for operational care management utilization signals."""
     __tablename__ = "care_management_signals"
 
-    id = Column(Integer, primary_key=True, index=True)
-    beneficiary_id = Column(String(64), index=True, nullable=False)
-    signal_type = Column(String(64), index=True, nullable=False)
-    severity = Column(String(16), nullable=False)
-    evidence = Column(Text, nullable=False)
-    recommended_review = Column(Text, nullable=False)
-    audited_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    beneficiary_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    signal_type: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    recommended_review: Mapped[str] = mapped_column(Text, nullable=False)
+    audited_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     def to_dict(self) -> Dict[str, Any]:
+        aud_val = self.audited_at
         return {
             "id": self.id,
             "beneficiary_id": self.beneficiary_id,
@@ -255,7 +258,7 @@ class CMSCareManagementSignalRecord(Base):
             "severity": self.severity,
             "evidence": self.evidence,
             "recommended_review": self.recommended_review,
-            "audited_at": self.audited_at.isoformat() if self.audited_at else None,
+            "audited_at": aud_val.isoformat() if aud_val is not None else None,
         }
 
 
@@ -263,17 +266,18 @@ class AuditCacheRecord(Base):
     """SQLAlchemy ORM model for persisting completed CMS audit reports (DQ, Freshness, Cross-Domain, Care Mgmt, Decision Impact)."""
     __tablename__ = "audit_cache_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    report_type = Column(String(64), unique=True, index=True, nullable=False)
-    report_json = Column(Text, nullable=False)
-    source_mtime_hash = Column(String(128), nullable=True)
-    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    report_type: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    report_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_mtime_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    generated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     def to_dict(self) -> Dict[str, Any]:
-        data = json.loads(self.report_json) if self.report_json else {}
+        data = json.loads(str(self.report_json)) if self.report_json else {}
+        gen_val = self.generated_at
         data["_cached_metadata"] = {
             "cached": True,
-            "generated_at": self.generated_at.isoformat() if self.generated_at else None,
+            "generated_at": gen_val.isoformat() if gen_val is not None else None,
             "source_mtime_hash": self.source_mtime_hash
         }
         return data
@@ -295,11 +299,17 @@ def set_audit_cache(db: Session, report_type: str, data: Dict[str, Any], source_
     try:
         rec = db.query(AuditCacheRecord).filter(AuditCacheRecord.report_type == report_type).first()
         if not rec:
-            rec = AuditCacheRecord(report_type=report_type)
+            rec = AuditCacheRecord(
+                report_type=report_type,
+                report_json=json.dumps(data),
+                source_mtime_hash=source_mtime_hash,
+                generated_at=datetime.now(timezone.utc)
+            )
             db.add(rec)
-        rec.report_json = json.dumps(data)
-        rec.source_mtime_hash = source_mtime_hash
-        rec.generated_at = datetime.now(timezone.utc)
+        else:
+            rec.report_json = json.dumps(data)
+            rec.source_mtime_hash = source_mtime_hash
+            rec.generated_at = datetime.now(timezone.utc)
         db.commit()
     except Exception as err:
         db.rollback()
@@ -446,21 +456,23 @@ class LLMExplanationRecord(Base):
     """SQLAlchemy ORM model for storing evidence-grounded LLM explanations."""
     __tablename__ = "llm_explanation_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    issue_type = Column(String(64), index=True, nullable=False)
-    reference_id = Column(String(64), index=True, nullable=True)
-    provider = Column(String(32), default="ollama")
-    model = Column(String(64), default="llama3.2:3b")
-    status = Column(String(32), nullable=False)
-    likely_cause = Column(Text, nullable=True)
-    business_impact = Column(Text, nullable=True)
-    recommended_fix = Column(Text, nullable=True)
-    evidence_used_json = Column(Text, nullable=True)
-    confidence = Column(Float, default=0.0)
-    latency_ms = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    issue_type: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    reference_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    provider: Mapped[str] = mapped_column(String(32), default="ollama")
+    model: Mapped[str] = mapped_column(String(64), default="llama3.2:3b")
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    likely_cause: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    business_impact: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recommended_fix: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    evidence_used_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     def to_dict(self) -> Dict[str, Any]:
+        cr_val = self.created_at
+        ev_json = self.evidence_used_json
         return {
             "id": self.id,
             "issue_type": self.issue_type,
@@ -471,10 +483,10 @@ class LLMExplanationRecord(Base):
             "likely_cause": self.likely_cause,
             "business_impact": self.business_impact,
             "recommended_fix": self.recommended_fix,
-            "evidence_used": json.loads(self.evidence_used_json) if self.evidence_used_json else [],
+            "evidence_used": json.loads(str(ev_json)) if ev_json else [],
             "confidence": self.confidence,
             "latency_ms": self.latency_ms,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": cr_val.isoformat() if cr_val is not None else None,
         }
 
 
@@ -504,4 +516,3 @@ def save_llm_explanation_record(db: Session, res_dict: Dict[str, Any], reference
         db.rollback()
         print(f"Error persisting LLM explanation record: {err}")
         return None
-

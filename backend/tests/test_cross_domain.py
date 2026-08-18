@@ -1,52 +1,20 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.main import app
-from app.database import Base, get_db
-import app.database as app_db
+from app.database import Base, engine
 from app.cross_domain import CMSCrossDomainEngine
 
-# Isolated in-memory database setup for cross-domain tests
-TEST_DATABASE_URL = "sqlite:///:memory:"
-test_engine = create_engine(
-    TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-
-app_db.engine = test_engine
-app_db.SessionLocal = TestingSessionLocal
-
-
-def override_get_db():
-    try:
-        db = TestingSessionLocal()
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
-
-
-@pytest.fixture(autouse=True)
-def setup_database():
-    Base.metadata.create_all(bind=test_engine)
-    yield
-    Base.metadata.drop_all(bind=test_engine)
-
+# Ensure PostgreSQL tables exist
+Base.metadata.create_all(bind=engine)
 
 client = TestClient(app)
 
 
 def test_cms_cross_domain_engine_checks():
     """Test CMSCrossDomainEngine execution, corrected finding classifications, and 100% score."""
-    engine = CMSCrossDomainEngine()
-    report = engine.run_all_checks()
+    engine_inst = CMSCrossDomainEngine()
+    report = engine_inst.run_all_checks()
     assert "summary" in report
     assert "checks" in report
     assert report["summary"]["total_cross_domain_checks"] == 6
@@ -60,8 +28,8 @@ def test_cms_cross_domain_engine_checks():
 
 def test_cms_cross_domain_not_linkable_check():
     """Test that Beneficiary to Part D linkage is explicitly reported as NOT_LINKABLE_WITH_AVAILABLE_KEYS."""
-    engine = CMSCrossDomainEngine()
-    report = engine.run_all_checks()
+    engine_inst = CMSCrossDomainEngine()
+    report = engine_inst.run_all_checks()
     partd_check = next((c for c in report["checks"] if c["check_name"] == "BENEFICIARY_PARTD_LINKAGE"), None)
     assert partd_check is not None
     assert partd_check["status"] == "NOT_LINKABLE_WITH_AVAILABLE_KEYS"
@@ -71,15 +39,14 @@ def test_cms_cross_domain_not_linkable_check():
 
 def test_carrier_partd_provider_finding_type():
     """Test that Carrier physician to Part D prescriber NPI non-overlap is classified as EXPECTED_DIFFERENCE with 0 actionable violations."""
-    engine = CMSCrossDomainEngine()
-    report = engine.run_all_checks()
+    engine_inst = CMSCrossDomainEngine()
+    report = engine_inst.run_all_checks()
     check = next((c for c in report["checks"] if c["check_name"] == "CARRIER_PARTD_PROVIDER_NPI_MATCH"), None)
     assert check is not None
     assert check["finding_type"] == "EXPECTED_DIFFERENCE"
     assert check["actionable_violations"] == 0
     assert check["expected_differences"] >= 0
     assert check["violation_rate"] == 0.0
-
 
 
 def test_api_cross_domain_report_endpoint():

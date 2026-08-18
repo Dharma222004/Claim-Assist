@@ -1,39 +1,51 @@
 import os
 import pytest
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database import Base, AuthorizationRecord, save_authorization_record, create_db_engine
-
-
-# Setup in-memory SQLite engine for unit testing DB CRUD logic
-TEST_DATABASE_URL = "sqlite:///:memory:"
-engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from app.database import (
+    Base, AuthorizationRecord, save_authorization_record,
+    create_db_engine, DATABASE_URL, engine, SessionLocal
+)
 
 
 @pytest.fixture
 def db_session():
+    """Provide a clean PostgreSQL database session for testing, with automatic test record cleanup."""
     Base.metadata.create_all(bind=engine)
-    session = TestingSessionLocal()
+    session = SessionLocal()
     yield session
-    session.close()
-
+    # Cleanup test records created during testing
+    try:
+        session.query(AuthorizationRecord).filter(
+            AuthorizationRecord.auth_id.like("AUTH_DB_TEST_%") |
+            AuthorizationRecord.auth_id.like("SCHEMA_TEST_%")
+        ).delete(synchronize_session=False)
+        session.commit()
+    except Exception:
+        session.rollback()
+    finally:
+        session.close()
 
 
 def test_db_engine_creation_and_url_handling():
-    """Verify database engine creation handles both PostgreSQL and SQLite URLs."""
-    pg_url = "postgresql+psycopg://postgres:password@localhost:5432/final_anomaly"
+    """Verify PostgreSQL engine creation and rejection of unsupported SQLite/other schemes."""
+    pg_url = DATABASE_URL
     pg_eng = create_db_engine(pg_url)
     assert pg_eng.name == "postgresql"
     assert "psycopg" in pg_eng.driver
 
-    sqlite_eng = create_db_engine("sqlite:///:memory:")
-    assert sqlite_eng.name == "sqlite"
+    # Reject non-PostgreSQL schemas
+    with pytest.raises(ValueError, match="Invalid DATABASE_URL scheme"):
+        create_db_engine("sqlite:///:memory:")
+
+    with pytest.raises(ValueError, match="Invalid DATABASE_URL scheme"):
+        create_db_engine("sqlite:///some_local.db")
 
 
 def test_database_save_and_retrieve(db_session):
-    """Test creating, persisting, and querying AuthorizationRecord ORM instances."""
+    """Test creating, persisting, and querying AuthorizationRecord ORM instances in PostgreSQL."""
     record_data = {
         "auth_id": "AUTH_DB_TEST_001",
         "ml_req_units": 10.0,
@@ -57,7 +69,7 @@ def test_database_save_and_retrieve(db_session):
     assert saved.prediction == "NORMAL"
     assert saved.final_priority == "LOW"
 
-    # Query back
+    # Query back from PostgreSQL
     queried = db_session.query(AuthorizationRecord).filter(AuthorizationRecord.auth_id == "AUTH_DB_TEST_001").first()
     assert queried is not None
     assert queried.probability == 0.25
@@ -86,7 +98,8 @@ def test_database_schema_fields(db_session):
     db_session.add(rec)
     db_session.commit()
 
-    retrieved = db_session.query(AuthorizationRecord).first()
+    retrieved = db_session.query(AuthorizationRecord).filter(AuthorizationRecord.auth_id == "SCHEMA_TEST_001").first()
+    assert retrieved is not None
     d = retrieved.to_dict()
 
     expected_keys = [

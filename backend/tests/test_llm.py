@@ -2,45 +2,30 @@ import pytest
 import json
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.main import app
-from app.database import Base, get_db, AuthorizationRecord, save_authorization_record
-import app.database as app_db
+from app.database import Base, engine, SessionLocal, AuthorizationRecord, save_authorization_record
 from app.llm_service import LLMExplanationService
 from app.llm_prompts import SYSTEM_PROMPT, build_evidence_user_prompt
 
-# Isolated in-memory database setup for LLM tests
-TEST_DATABASE_URL = "sqlite:///:memory:"
-test_engine = create_engine(
-    TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-
-app_db.engine = test_engine
-app_db.SessionLocal = TestingSessionLocal
-
-
-def override_get_db():
-    try:
-        db = TestingSessionLocal()
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
+# Ensure PostgreSQL tables exist
+Base.metadata.create_all(bind=engine)
 
 
 @pytest.fixture(autouse=True)
-def setup_database():
-    Base.metadata.create_all(bind=test_engine)
+def cleanup_llm_test_records():
+    """Cleanup test records after each test run in PostgreSQL."""
     yield
-    Base.metadata.drop_all(bind=test_engine)
+    try:
+        session = SessionLocal()
+        session.query(AuthorizationRecord).filter(
+            AuthorizationRecord.auth_id.like("AUTH_POSTGRES_TEST_%") |
+            AuthorizationRecord.auth_id.like("TEST_%")
+        ).delete(synchronize_session=False)
+        session.commit()
+        session.close()
+    except Exception:
+        pass
 
 
 client = TestClient(app)
@@ -135,7 +120,7 @@ def test_api_explain_endpoint():
 
 def test_api_explain_authorization_from_postgres():
     """Test POST /api/llm/explain/authorization/{auth_id} using existing PostgreSQL record returns PROCESSING immediately."""
-    db = TestingSessionLocal()
+    db = SessionLocal()
     save_authorization_record(db, {
         "auth_id": "AUTH_POSTGRES_TEST_100",
         "ml_req_units": 100.0,
@@ -156,7 +141,6 @@ def test_api_explain_authorization_from_postgres():
     data = response.json()
     assert data["status"] == "PROCESSING"
     assert "request_id" in data
-
 
 
 def test_api_explain_authorization_404():

@@ -1,51 +1,19 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.main import app
-from app.database import Base, get_db
-import app.database as app_db
+from app.database import Base, engine
 from app.decision_impact import DownstreamDecisionImpactEngine
 
-# Isolated in-memory database setup for decision impact tests
-TEST_DATABASE_URL = "sqlite:///:memory:"
-test_engine = create_engine(
-    TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-
-app_db.engine = test_engine
-app_db.SessionLocal = TestingSessionLocal
-
-
-def override_get_db():
-    try:
-        db = TestingSessionLocal()
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
-
-
-@pytest.fixture(autouse=True)
-def setup_database():
-    Base.metadata.create_all(bind=test_engine)
-    yield
-    Base.metadata.drop_all(bind=test_engine)
-
+# Ensure PostgreSQL tables exist
+Base.metadata.create_all(bind=engine)
 
 client = TestClient(app)
 
 
 def test_decision_impact_engine_mapping():
     """Test DownstreamDecisionImpactEngine rule-based impact mapping."""
-    engine = DownstreamDecisionImpactEngine()
+    engine_inst = DownstreamDecisionImpactEngine()
     
     # Mock data quality report with low score
     dq_mock = {
@@ -62,7 +30,7 @@ def test_decision_impact_engine_mapping():
         "sla_risk": "HIGH"
     }
 
-    impacts = engine.evaluate_decision_impacts(data_quality_report=dq_mock, authorization_event=auth_mock)
+    impacts = engine_inst.evaluate_decision_impacts(data_quality_report=dq_mock, authorization_event=auth_mock)
     assert len(impacts) >= 2
     
     areas = [imp["impact_area"] for imp in impacts]

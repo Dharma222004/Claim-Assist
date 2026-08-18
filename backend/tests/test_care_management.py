@@ -1,52 +1,20 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.main import app
-from app.database import Base, get_db
-import app.database as app_db
+from app.database import Base, engine
 from app.care_management import CMSCareManagementEngine
 
-# Isolated in-memory database setup for care management tests
-TEST_DATABASE_URL = "sqlite:///:memory:"
-test_engine = create_engine(
-    TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-
-app_db.engine = test_engine
-app_db.SessionLocal = TestingSessionLocal
-
-
-def override_get_db():
-    try:
-        db = TestingSessionLocal()
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
-
-
-@pytest.fixture(autouse=True)
-def setup_database():
-    Base.metadata.create_all(bind=test_engine)
-    yield
-    Base.metadata.drop_all(bind=test_engine)
-
+# Ensure PostgreSQL tables exist
+Base.metadata.create_all(bind=engine)
 
 client = TestClient(app)
 
 
 def test_care_management_engine_extraction():
     """Test operational care management utilization signals extraction from raw CMS data."""
-    engine = CMSCareManagementEngine()
-    report = engine.extract_care_signals(max_beneficiaries=10)
+    engine_inst = CMSCareManagementEngine()
+    report = engine_inst.extract_care_signals(max_beneficiaries=10)
     assert "summary" in report
     assert "signals" in report
     assert report["summary"]["total_care_signals_generated"] > 0
