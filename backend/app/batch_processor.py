@@ -3,7 +3,7 @@ import pandas as pd
 from typing import Dict, Any, List, Tuple
 from sqlalchemy.orm import Session
 
-from app.database import save_authorization_record
+from app.database import save_authorization_records_batch
 
 # Forbidden ground-truth columns that must NEVER be passed to ML inference
 FORBIDDEN_FIELDS = {"EXPECTED_ANOMALY", "EXPECTED_TYPE", "IS_ANOMALY", "ANOMALY_TYPE"}
@@ -15,9 +15,13 @@ def process_csv_batch(
     db: Session = None
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
-    Process authorization CSV file using the EXACT SAME inference pipeline function as /api/predict.
+    High-performance batch processor for authorization CSV files.
+    Processes inference in-memory and persists all records in a single bulk transaction.
     """
-    df = pd.read_csv(io.BytesIO(csv_bytes))
+    try:
+        df = pd.read_csv(io.BytesIO(csv_bytes))
+    except UnicodeDecodeError:
+        df = pd.read_csv(io.BytesIO(csv_bytes), encoding="latin1")
 
     # Strip forbidden columns if present in CSV
     clean_columns = [col for col in df.columns if col not in FORBIDDEN_FIELDS and col.upper() not in FORBIDDEN_FIELDS]
@@ -37,8 +41,8 @@ def process_csv_batch(
         if "auth_id" not in row or not row["auth_id"]:
             row["auth_id"] = f"CSV_AUTH_{index + 1:04d}"
 
-        # Call the exact same inference pipeline function used by /api/predict
-        result = pipeline_func(row, db=db)
+        # Call pipeline with persist_db=False to compute inference at microsecond speed
+        result = pipeline_func(row, db=None, persist_db=False)
 
         prediction = result.get("prediction", "NORMAL")
         final_priority = result.get("final_priority", "LOW")
@@ -54,6 +58,13 @@ def process_csv_batch(
 
         detailed_results.append(result)
 
+    # Persist all records in a single bulk transaction
+    if db is not None and detailed_results:
+        try:
+            save_authorization_records_batch(db, detailed_results)
+        except Exception as err:
+            print(f"Error persisting batch records: {err}")
+
     avg_latency_ms = round(total_latency_ms / total_records, 3) if total_records > 0 else 0.0
 
     summary = {
@@ -66,3 +77,4 @@ def process_csv_batch(
     }
 
     return summary, detailed_results
+

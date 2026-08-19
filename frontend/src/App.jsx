@@ -101,9 +101,17 @@ export default function App() {
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
+      let pingInterval = null;
+
       ws.onopen = () => {
         setWsConnected(true);
         wsReconnectDelay.current = 1000; // reset backoff
+        // Keep alive heartbeat for cloud proxies (Render/Cloudflare)
+        pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send("ping");
+          }
+        }, 15000);
       };
 
       ws.onmessage = (event) => {
@@ -121,6 +129,7 @@ export default function App() {
       };
 
       ws.onclose = () => {
+        if (pingInterval) clearInterval(pingInterval);
         setWsConnected(false);
         // Exponential backoff reconnect
         const delay = Math.min(wsReconnectDelay.current, 10000);
@@ -131,6 +140,7 @@ export default function App() {
       };
 
       ws.onerror = () => {
+        if (pingInterval) clearInterval(pingInterval);
         ws.close();
       };
     } catch (_) {

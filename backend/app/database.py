@@ -379,6 +379,43 @@ def save_authorization_record(db: Session, record_data: Dict[str, Any]) -> Autho
     return rec
 
 
+def save_authorization_records_batch(db: Session, records_list: List[Dict[str, Any]]) -> List[AuthorizationRecord]:
+    """Bulk save authorization records in a single database transaction for high performance."""
+    if not records_list:
+        return []
+    recs = []
+    now_ts = datetime.now(timezone.utc)
+    for record_data in records_list:
+        reasons_list = record_data.get("reasons", [])
+        rec = AuthorizationRecord(
+            auth_id=str(record_data.get("auth_id", "AUTH_UNKNOWN")),
+            timestamp=now_ts,
+            ml_req_units=float(record_data.get("ml_req_units", 0.0)),
+            ml_aprvd_units=float(record_data.get("ml_aprvd_units", 0.0)),
+            ml_latency_hours=float(record_data.get("ml_latency_hours", 0.0)),
+            ml_bene_age=float(record_data.get("ml_bene_age", 0.0)),
+            ml_prov_partd_cost=float(record_data.get("ml_prov_partd_cost", 0.0)),
+            prediction=str(record_data.get("prediction", "NORMAL")),
+            probability=float(record_data.get("probability", 0.0)),
+            ml_risk_level=str(record_data.get("risk_level", "LOW")),
+            rule_violations_count=int(record_data.get("rule_violations_count", 0)),
+            sla_risk=str(record_data.get("sla_risk", "LOW")),
+            final_priority=str(record_data.get("final_priority", "LOW")),
+            reasons_json=json.dumps(reasons_list),
+            inference_latency_ms=float(record_data.get("inference_latency_ms", 0.0)),
+        )
+        recs.append(rec)
+    
+    try:
+        db.add_all(recs)
+        db.commit()
+    except Exception as err:
+        db.rollback()
+        print(f"Error bulk saving authorization records: {err}")
+    return recs
+
+
+
 def save_cms_freshness_records(db: Session, reports_dict: Dict[str, Any]):
     """Persist CMS dataset freshness audit metadata into database."""
     try:

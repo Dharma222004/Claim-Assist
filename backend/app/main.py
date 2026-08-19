@@ -118,7 +118,7 @@ def get_health_root():
 
 
 
-def execute_full_inference_pipeline(raw_data: Dict[str, Any], db: Optional[Session] = None) -> Dict[str, Any]:
+def execute_full_inference_pipeline(raw_data: Dict[str, Any], db: Optional[Session] = None, persist_db: bool = True) -> Dict[str, Any]:
     """
     Unified Inference Pipeline with microsecond LiveLatencyTracker precision timing.
     """
@@ -164,7 +164,7 @@ def execute_full_inference_pipeline(raw_data: Dict[str, Any], db: Optional[Sessi
     )
 
     # 6. Database Persistence
-    if db is not None:
+    if db is not None and persist_db:
         try:
             save_authorization_record(db, {
                 "auth_id": auth_id,

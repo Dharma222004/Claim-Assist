@@ -143,7 +143,7 @@ export async function uploadCSV(file) {
   return apiRequest('/batch-predict', {
     method: 'POST',
     body: formData,
-  }, 60000);
+  }, 180000);
 }
 
 // ---------------------------------------------------------------------------
