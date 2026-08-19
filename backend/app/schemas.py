@@ -62,17 +62,21 @@ class HealthResponse(BaseModel):
 
 
 class BatchPredictionSummary(BaseModel):
+    batch_id: Optional[str] = None
+    filename: Optional[str] = None
     total_records: int
     normal_count: int
     anomaly_count: int
     anomaly_rate: float
     priority_distribution: Dict[str, int]
     avg_inference_latency_ms: float
+    uploaded_at: Optional[str] = None
 
 
 class BatchPredictionResponse(BaseModel):
     summary: BatchPredictionSummary
-    results: List[PredictionResponse]
+    results: List[Dict[str, Any]]
+
 
 
 class PaginatedPredictionsResponse(BaseModel):

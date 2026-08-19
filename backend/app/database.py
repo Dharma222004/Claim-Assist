@@ -80,6 +80,7 @@ class AuthorizationRecord(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     auth_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    batch_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
     timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     # Base input summary
@@ -119,6 +120,7 @@ class AuthorizationRecord(Base):
         return {
             "id": self.id,
             "auth_id": self.auth_id,
+            "batch_id": self.batch_id,
             "timestamp": ts_val.isoformat() if ts_val is not None else None,
             "ml_req_units": self.ml_req_units,
             "ml_aprvd_units": self.ml_aprvd_units,
@@ -134,6 +136,47 @@ class AuthorizationRecord(Base):
             "reasons": self.reasons,
             "inference_latency_ms": self.inference_latency_ms,
         }
+
+
+class BatchUploadRecord(Base):
+    """SQLAlchemy ORM model for distinct file upload analysis batches."""
+    __tablename__ = "batch_upload_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    batch_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    uploaded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    total_records: Mapped[int] = mapped_column(Integer, default=0)
+    normal_count: Mapped[int] = mapped_column(Integer, default=0)
+    anomaly_count: Mapped[int] = mapped_column(Integer, default=0)
+    anomaly_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    priority_low: Mapped[int] = mapped_column(Integer, default=0)
+    priority_medium: Mapped[int] = mapped_column(Integer, default=0)
+    priority_high: Mapped[int] = mapped_column(Integer, default=0)
+    priority_critical: Mapped[int] = mapped_column(Integer, default=0)
+    avg_inference_latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    summary_json: Mapped[Optional[str]] = mapped_column(Text, default="{}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        ts_val = self.uploaded_at
+        return {
+            "id": self.id,
+            "batch_id": self.batch_id,
+            "filename": self.filename,
+            "uploaded_at": ts_val.isoformat() if ts_val is not None else None,
+            "total_records": self.total_records,
+            "normal_count": self.normal_count,
+            "anomaly_count": self.anomaly_count,
+            "anomaly_rate": self.anomaly_rate,
+            "priority_distribution": {
+                "LOW": self.priority_low,
+                "MEDIUM": self.priority_medium,
+                "HIGH": self.priority_high,
+                "CRITICAL": self.priority_critical,
+            },
+            "avg_inference_latency_ms": self.avg_inference_latency_ms,
+        }
+
 
 
 class CMSFreshnessRecord(Base):
@@ -329,7 +372,7 @@ def set_audit_cache(db: Session, report_type: str, data: Dict[str, Any], source_
 
 
 def init_db():
-    """Initialize database tables, falling back to SQLite if PostgreSQL is unreachable."""
+    """Initialize database tables, falling back to SQLite if PostgreSQL is unreachable, and ensure schema migrations."""
     global engine, SessionLocal
     try:
         Base.metadata.create_all(bind=engine)
@@ -341,6 +384,22 @@ def init_db():
             Base.metadata.create_all(bind=engine)
         else:
             raise err
+
+    # Ensure batch_id column exists on existing authorization_records tables
+    try:
+        with engine.connect() as conn:
+            if "sqlite" in str(engine.url):
+                res = conn.exec_driver_sql("PRAGMA table_info(authorization_records);").fetchall()
+                col_names = [r[1] for r in res]
+                if col_names and "batch_id" not in col_names:
+                    conn.exec_driver_sql("ALTER TABLE authorization_records ADD COLUMN batch_id VARCHAR(64);")
+                    conn.commit()
+            else:
+                conn.exec_driver_sql("ALTER TABLE authorization_records ADD COLUMN IF NOT EXISTS batch_id VARCHAR(64);")
+                conn.commit()
+    except Exception as e:
+        pass
+
 
 
 
@@ -358,6 +417,7 @@ def save_authorization_record(db: Session, record_data: Dict[str, Any]) -> Autho
     reasons_list = record_data.get("reasons", [])
     rec = AuthorizationRecord(
         auth_id=record_data.get("auth_id", "AUTH_UNKNOWN"),
+        batch_id=record_data.get("batch_id"),
         timestamp=datetime.now(timezone.utc),
         ml_req_units=float(record_data.get("ml_req_units", 0.0)),
         ml_aprvd_units=float(record_data.get("ml_aprvd_units", 0.0)),
@@ -379,7 +439,11 @@ def save_authorization_record(db: Session, record_data: Dict[str, Any]) -> Autho
     return rec
 
 
-def save_authorization_records_batch(db: Session, records_list: List[Dict[str, Any]]) -> List[AuthorizationRecord]:
+def save_authorization_records_batch(
+    db: Session,
+    records_list: List[Dict[str, Any]],
+    batch_id: Optional[str] = None
+) -> List[AuthorizationRecord]:
     """Bulk save authorization records in a single database transaction for high performance."""
     if not records_list:
         return []
@@ -387,8 +451,10 @@ def save_authorization_records_batch(db: Session, records_list: List[Dict[str, A
     now_ts = datetime.now(timezone.utc)
     for record_data in records_list:
         reasons_list = record_data.get("reasons", [])
+        bid = record_data.get("batch_id") or batch_id
         rec = AuthorizationRecord(
             auth_id=str(record_data.get("auth_id", "AUTH_UNKNOWN")),
+            batch_id=bid,
             timestamp=now_ts,
             ml_req_units=float(record_data.get("ml_req_units", 0.0)),
             ml_aprvd_units=float(record_data.get("ml_aprvd_units", 0.0)),
@@ -413,6 +479,64 @@ def save_authorization_records_batch(db: Session, records_list: List[Dict[str, A
         db.rollback()
         print(f"Error bulk saving authorization records: {err}")
     return recs
+
+
+def create_batch_upload_record(db: Session, batch_data: Dict[str, Any]) -> BatchUploadRecord:
+    """Create and persist a new batch upload metadata record."""
+    priority_dist = batch_data.get("priority_distribution", {})
+    rec = BatchUploadRecord(
+        batch_id=batch_data["batch_id"],
+        filename=batch_data.get("filename", "batch_upload.csv"),
+        uploaded_at=datetime.now(timezone.utc),
+        total_records=int(batch_data.get("total_records", 0)),
+        normal_count=int(batch_data.get("normal_count", 0)),
+        anomaly_count=int(batch_data.get("anomaly_count", 0)),
+        anomaly_rate=float(batch_data.get("anomaly_rate", 0.0)),
+        priority_low=int(priority_dist.get("LOW", 0)),
+        priority_medium=int(priority_dist.get("MEDIUM", 0)),
+        priority_high=int(priority_dist.get("HIGH", 0)),
+        priority_critical=int(priority_dist.get("CRITICAL", 0)),
+        avg_inference_latency_ms=float(batch_data.get("avg_inference_latency_ms", 0.0)),
+        summary_json=json.dumps(batch_data)
+    )
+    try:
+        db.add(rec)
+        db.commit()
+        db.refresh(rec)
+        return rec
+    except Exception as err:
+        db.rollback()
+        print(f"Error creating batch upload record: {err}")
+        return rec
+
+
+def get_all_batches(db: Session) -> List[BatchUploadRecord]:
+    """Retrieve all uploaded batches ordered by most recent first."""
+    return db.query(BatchUploadRecord).order_by(BatchUploadRecord.uploaded_at.desc()).all()
+
+
+def get_latest_batch(db: Session) -> Optional[BatchUploadRecord]:
+    """Retrieve the most recent batch upload record."""
+    return db.query(BatchUploadRecord).order_by(BatchUploadRecord.uploaded_at.desc()).first()
+
+
+def get_batch_by_id(db: Session, batch_id: str) -> Optional[BatchUploadRecord]:
+    """Retrieve a specific batch upload record by batch_id."""
+    return db.query(BatchUploadRecord).filter(BatchUploadRecord.batch_id == batch_id).first()
+
+
+def delete_batch_record(db: Session, batch_id: str) -> bool:
+    """Delete a batch upload record and all associated authorization predictions."""
+    try:
+        db.query(AuthorizationRecord).filter(AuthorizationRecord.batch_id == batch_id).delete(synchronize_session=False)
+        db.query(BatchUploadRecord).filter(BatchUploadRecord.batch_id == batch_id).delete(synchronize_session=False)
+        db.commit()
+        return True
+    except Exception as err:
+        db.rollback()
+        print(f"Error deleting batch {batch_id}: {err}")
+        return False
+
 
 
 

@@ -1,4 +1,5 @@
 import json
+import uuid
 import random
 import asyncio
 from datetime import datetime, timezone
@@ -21,9 +22,12 @@ from app.rules import (
 )
 from app.explainability import generate_explanation_summary
 from app.database import (
-    init_db, get_db, SessionLocal, save_authorization_record, save_cms_freshness_records,
+    get_db, init_db, SessionLocal, save_authorization_record, save_authorization_records_batch,
+    save_cms_freshness_records,
     save_cms_cross_domain_records, save_cms_decision_impact_records, save_cms_care_management_signals,
-    save_llm_explanation_record, AuthorizationRecord, CMSFreshnessRecord, CMSCrossDomainRecord,
+    save_llm_explanation_record, create_batch_upload_record, get_all_batches, get_latest_batch,
+    get_batch_by_id, delete_batch_record,
+    AuthorizationRecord, BatchUploadRecord, CMSFreshnessRecord, CMSCrossDomainRecord,
     CMSDecisionImpactRecord, CMSCareManagementSignalRecord, LLMExplanationRecord
 )
 from app.websocket_manager import ws_manager
@@ -294,22 +298,29 @@ async def simulate_stream_event(db: Session = Depends(get_db)):
 
 @app.post("/api/batch-predict", response_model=BatchPredictionResponse)
 async def batch_predict(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Batch authorization CSV upload ingestion endpoint using exact same inference pipeline."""
+    """Batch authorization CSV upload ingestion endpoint with separate batch isolation."""
     if not file.filename or not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are supported.")
 
     try:
         contents = await file.read()
+        filename = file.filename or "upload.csv"
+        batch_id = f"BATCH_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
         summary, results = process_csv_batch(
             csv_bytes=contents,
             pipeline_func=execute_full_inference_pipeline,
-            db=db
+            db=db,
+            batch_id=batch_id,
+            filename=filename
         )
 
         # Broadcast batch completion notification to live stream
         await ws_manager.broadcast({
             "event_type": "BATCH_COMPLETED",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "batch_id": batch_id,
+            "filename": filename,
             "summary": summary
         })
 
@@ -318,16 +329,63 @@ async def batch_predict(file: UploadFile = File(...), db: Session = Depends(get_
         raise HTTPException(status_code=500, detail=f"CSV Batch Processing Error: {str(e)}")
 
 
+@app.get("/api/batches")
+def list_batches(db: Session = Depends(get_db)):
+    """Retrieve all uploaded batch sessions ordered by most recent first."""
+    batches = get_all_batches(db)
+    return {
+        "total_batches": len(batches),
+        "batches": [b.to_dict() for b in batches]
+    }
+
+
+@app.get("/api/batches/latest")
+def get_latest_batch_endpoint(db: Session = Depends(get_db)):
+    """Retrieve the most recent batch analysis session."""
+    batch = get_latest_batch(db)
+    if not batch:
+        return {"batch": None}
+    return {"batch": batch.to_dict()}
+
+
+@app.get("/api/batches/{batch_id}")
+def get_batch_endpoint(batch_id: str, db: Session = Depends(get_db)):
+    """Retrieve a specific batch analysis session."""
+    batch = get_batch_by_id(db, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return {"batch": batch.to_dict()}
+
+
+@app.delete("/api/batches/{batch_id}")
+def delete_batch_endpoint(batch_id: str, db: Session = Depends(get_db)):
+    """Delete a specific batch and all associated prediction records."""
+    success = delete_batch_record(db, batch_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Batch not found or could not be deleted")
+    return {"status": "deleted", "batch_id": batch_id}
+
+
 @app.get("/api/predictions", response_model=PaginatedPredictionsResponse)
 def get_predictions(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     priority: Optional[str] = None,
     prediction: Optional[str] = None,
+    batch_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Retrieve historical authorization predictions from database."""
+    """Retrieve authorization predictions filtered by batch and criteria."""
     query = db.query(AuthorizationRecord)
+
+    # Handle batch filtering
+    if batch_id == "latest" or batch_id is None:
+        latest = get_latest_batch(db)
+        if latest:
+            query = query.filter(AuthorizationRecord.batch_id == latest.batch_id)
+    elif batch_id != "all" and batch_id:
+        query = query.filter(AuthorizationRecord.batch_id == batch_id)
+
     if priority:
         query = query.filter(AuthorizationRecord.final_priority == priority.upper())
     if prediction:
@@ -347,15 +405,46 @@ def get_predictions(
 
 
 @app.get("/api/stats")
-def get_stats(db: Session = Depends(get_db)):
-    """Retrieve aggregated stats for dashboard cards & charts."""
-    total = db.query(AuthorizationRecord).count()
-    normal_count = db.query(AuthorizationRecord).filter(AuthorizationRecord.prediction == "NORMAL").count()
-    anomaly_count = db.query(AuthorizationRecord).filter(AuthorizationRecord.prediction == "ANOMALY").count()
+def get_stats(
+    batch_id: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db)
+):
+    """Retrieve aggregated stats for dashboard cards & charts, scoped to active batch or all records."""
+    query = db.query(AuthorizationRecord)
+    active_batch_dict = None
+
+    if batch_id == "all":
+        # All historical records
+        total_batches_cnt = db.query(BatchUploadRecord).count()
+        active_batch_dict = {
+            "batch_id": "all",
+            "filename": f"All Uploads ({total_batches_cnt} batches)",
+            "is_all": True
+        }
+    elif batch_id == "latest" or batch_id is None:
+        latest_batch = get_latest_batch(db)
+        if latest_batch:
+            query = query.filter(AuthorizationRecord.batch_id == latest_batch.batch_id)
+            active_batch_dict = latest_batch.to_dict()
+        else:
+            active_batch_dict = None
+    else:
+        # Specific batch ID
+        batch_record = get_batch_by_id(db, batch_id)
+        if batch_record:
+            query = query.filter(AuthorizationRecord.batch_id == batch_id)
+            active_batch_dict = batch_record.to_dict()
+        else:
+            query = query.filter(AuthorizationRecord.batch_id == batch_id)
+            active_batch_dict = {"batch_id": batch_id, "filename": "Selected Batch"}
+
+    total = query.count()
+    normal_count = query.filter(AuthorizationRecord.prediction == "NORMAL").count()
+    anomaly_count = query.filter(AuthorizationRecord.prediction == "ANOMALY").count()
 
     priorities = {"LOW": 0, "MEDIUM": 0, "HIGH": 0, "CRITICAL": 0}
     for prio in priorities.keys():
-        priorities[prio] = db.query(AuthorizationRecord).filter(AuthorizationRecord.final_priority == prio).count()
+        priorities[prio] = query.filter(AuthorizationRecord.final_priority == prio).count()
 
     freshness_records_cnt = db.query(CMSFreshnessRecord).count()
     cross_domain_cnt = db.query(CMSCrossDomainRecord).count()
@@ -368,6 +457,7 @@ def get_stats(db: Session = Depends(get_db)):
         "anomaly_count": anomaly_count,
         "anomaly_rate": round(anomaly_count / total, 4) if total > 0 else 0.0,
         "priority_distribution": priorities,
+        "active_batch": active_batch_dict,
         "cms_freshness": {
             "audited_datasets_count": freshness_records_cnt,
             "status": "AVAILABLE" if freshness_records_cnt > 0 else "PENDING_AUDIT"
@@ -382,6 +472,7 @@ def get_stats(db: Session = Depends(get_db)):
             "status": "ACTIVE" if (decision_impact_cnt > 0 or care_signals_cnt > 0) else "PENDING_AUDIT"
         }
     }
+
 
 
 # ============================================================================

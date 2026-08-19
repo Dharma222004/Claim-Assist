@@ -8,6 +8,8 @@ import AnomaliesPage from './components/AnomaliesPage';
 import DataPipelinePage from './components/DataPipelinePage';
 import AnomalyDetailDrawer from './components/AnomalyDetailDrawer';
 import CsvUploadModal from './components/CsvUploadModal';
+import BatchSelectorBar from './components/BatchSelectorBar';
+import BatchHistoryModal from './components/BatchHistoryModal';
 
 // ============================================================================
 // Error Boundary — prevents one component crash from killing the whole app
@@ -42,6 +44,10 @@ class ErrorBoundary extends Component {
 export default function App() {
   const [activeTab, setActiveTab] = useState('OVERVIEW');
 
+  // Batch isolation state
+  const [selectedBatchId, setSelectedBatchId] = useState('latest');
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+
   // Global data state
   const [stats, setStats] = useState(null);
   const [statsLoading, setStatsLoading] = useState(true);
@@ -64,10 +70,10 @@ export default function App() {
   // ──────────────────────────────────────────────────────────────────
   // Data loading
   // ──────────────────────────────────────────────────────────────────
-  const loadStats = useCallback(async () => {
+  const loadStats = useCallback(async (bId = selectedBatchId) => {
     setStatsLoading(true);
     setStatsError(null);
-    const res = await getStats();
+    const res = await getStats(bId);
     if (res.ok) {
       setStats(res.data);
       setLastRefreshed(new Date().toISOString());
@@ -75,7 +81,7 @@ export default function App() {
       setStatsError(res.error);
     }
     setStatsLoading(false);
-  }, []);
+  }, [selectedBatchId]);
 
   const loadDataQuality = useCallback(async () => {
     const res = await getDataQualityReport(1);
@@ -86,10 +92,16 @@ export default function App() {
   }, []);
 
   const handleRefresh = useCallback(() => {
-    loadStats();
+    loadStats(selectedBatchId);
     loadDataQuality();
     setRefreshTrigger(prev => prev + 1);
-  }, [loadStats, loadDataQuality]);
+  }, [loadStats, loadDataQuality, selectedBatchId]);
+
+  const handleSelectBatch = useCallback((batchId) => {
+    setSelectedBatchId(batchId);
+    loadStats(batchId);
+    setRefreshTrigger(prev => prev + 1);
+  }, [loadStats]);
 
   // ──────────────────────────────────────────────────────────────────
   // WebSocket
@@ -121,8 +133,13 @@ export default function App() {
             if (msg.event_type === 'NEW_PREDICTION') {
               setLiveEvents(prev => [msg, ...prev.slice(0, 99)]);
             }
-            // Refresh stats after any backend event
-            loadStats();
+            if (msg.event_type === 'BATCH_COMPLETED' && msg.batch_id) {
+              // Automatically switch to the newly uploaded batch analysis
+              setSelectedBatchId(msg.batch_id);
+              loadStats(msg.batch_id);
+            } else {
+              loadStats(selectedBatchId);
+            }
             setRefreshTrigger(prev => prev + 1);
           }
         } catch (_) { /* ignore non-JSON frames like pong */ }
@@ -146,13 +163,13 @@ export default function App() {
     } catch (_) {
       // Will retry via onclose
     }
-  }, [loadStats]);
+  }, [loadStats, selectedBatchId]);
 
   // ──────────────────────────────────────────────────────────────────
   // Initial load
   // ──────────────────────────────────────────────────────────────────
   useEffect(() => {
-    loadStats();
+    loadStats(selectedBatchId);
     loadDataQuality();
     connectWebSocket();
 
@@ -165,38 +182,21 @@ export default function App() {
   // ──────────────────────────────────────────────────────────────────
   // Handlers
   // ──────────────────────────────────────────────────────────────────
-  const handleSimulateResult = (result) => {
-    // If WebSocket is down, we still show the HTTP result as a live event
-    if (result) {
-      setLiveEvents(prev => [
-        { event_type: 'NEW_PREDICTION', timestamp: new Date().toISOString(), data: result },
-        ...prev.slice(0, 99),
-      ]);
-      loadStats();
-      setRefreshTrigger(prev => prev + 1);
-    }
-  };
-
-  const handleNavigation = (tab, record) => {
+  const handleNavigation = useCallback((tab) => {
     setActiveTab(tab);
-    if (record) setSelectedRecord(record);
-  };
+  }, []);
 
-  const handleCsvSuccess = () => {
-    loadStats();
-    loadDataQuality();
+  const handleSimulateResult = useCallback((res) => {
+    loadStats(selectedBatchId);
     setRefreshTrigger(prev => prev + 1);
-  };
+  }, [loadStats, selectedBatchId]);
 
-  // ──────────────────────────────────────────────────────────────────
-  // Render
-  // ──────────────────────────────────────────────────────────────────
-  const tabs = [
-    { id: 'OVERVIEW', label: 'Overview' },
-    { id: 'LIVE_MONITOR', label: 'Live Monitor' },
-    { id: 'ANOMALIES', label: 'Anomalies' },
-    { id: 'DATA_PIPELINE', label: 'Data Pipeline' },
-  ];
+  const handleCsvSuccess = useCallback((batchResult) => {
+    const newBatchId = batchResult?.summary?.batch_id || 'latest';
+    setSelectedBatchId(newBatchId);
+    loadStats(newBatchId);
+    setRefreshTrigger(prev => prev + 1);
+  }, [loadStats]);
 
   return (
     <div className="app-shell">
@@ -213,15 +213,30 @@ export default function App() {
 
         {/* Tabs */}
         <div className="top-nav__tabs">
-          {tabs.map(tab => (
-            <button
-              key={tab.id}
-              className={`top-nav__tab ${activeTab === tab.id ? 'top-nav__tab--active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
+          <button
+            className={`top-nav__tab ${activeTab === 'OVERVIEW' ? 'top-nav__tab--active' : ''}`}
+            onClick={() => setActiveTab('OVERVIEW')}
+          >
+            Overview
+          </button>
+          <button
+            className={`top-nav__tab ${activeTab === 'LIVE_MONITOR' ? 'top-nav__tab--active' : ''}`}
+            onClick={() => setActiveTab('LIVE_MONITOR')}
+          >
+            Live Monitor
+          </button>
+          <button
+            className={`top-nav__tab ${activeTab === 'ANOMALIES' ? 'top-nav__tab--active' : ''}`}
+            onClick={() => setActiveTab('ANOMALIES')}
+          >
+            Anomalies
+          </button>
+          <button
+            className={`top-nav__tab ${activeTab === 'DATA_PIPELINE' ? 'top-nav__tab--active' : ''}`}
+            onClick={() => setActiveTab('DATA_PIPELINE')}
+          >
+            Data Pipeline
+          </button>
         </div>
 
         {/* Actions */}
@@ -234,7 +249,6 @@ export default function App() {
           <button className="btn btn--secondary btn--small" onClick={handleRefresh}>
             Refresh
           </button>
-
           <button className="btn btn--primary btn--small" onClick={() => setIsCsvUploadOpen(true)}>
             Upload CSV
           </button>
@@ -243,6 +257,16 @@ export default function App() {
 
       {/* ─── Page Content ─── */}
       <main className="page-content">
+        {/* Active Batch Analysis Switcher Bar */}
+        <BatchSelectorBar
+          selectedBatchId={selectedBatchId}
+          onSelectBatch={handleSelectBatch}
+          onOpenUpload={() => setIsCsvUploadOpen(true)}
+          onOpenHistory={() => setIsHistoryModalOpen(true)}
+          activeBatchInfo={stats?.active_batch}
+          totalRecords={stats?.total_requests || 0}
+        />
+
         {/* Backend offline banner */}
         {statsError && !stats && (
           <div className="card" style={{ marginBottom: 20, borderColor: 'var(--critical-border)', background: 'var(--critical-bg)' }}>
@@ -281,6 +305,7 @@ export default function App() {
             <AnomaliesPage
               onSelectRecord={setSelectedRecord}
               refreshTrigger={refreshTrigger}
+              selectedBatchId={selectedBatchId}
             />
           )}
 

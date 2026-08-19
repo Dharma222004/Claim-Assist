@@ -64,21 +64,44 @@ export async function getHealth() {
 }
 
 // ---------------------------------------------------------------------------
-// Statistics (dashboard KPIs)
+// Batches (Upload sessions & analysis isolation)
 // ---------------------------------------------------------------------------
 
-export async function getStats() {
-  return apiRequest('/stats', {}, 10000);
+export async function getBatches() {
+  return apiRequest('/batches', {}, 10000);
+}
+
+export async function getLatestBatch() {
+  return apiRequest('/batches/latest', {}, 10000);
+}
+
+export async function deleteBatch(batchId) {
+  return apiRequest(`/batches/${encodeURIComponent(batchId)}`, {
+    method: 'DELETE',
+  }, 10000);
+}
+
+// ---------------------------------------------------------------------------
+// Statistics (dashboard KPIs, scoped by batch)
+// ---------------------------------------------------------------------------
+
+export async function getStats(batchId = null) {
+  let path = '/stats';
+  if (batchId) {
+    path += `?batch_id=${encodeURIComponent(batchId)}`;
+  }
+  return apiRequest(path, {}, 10000);
 }
 
 // ---------------------------------------------------------------------------
 // Predictions / Authorizations
 // ---------------------------------------------------------------------------
 
-export async function getPredictions(page = 1, pageSize = 20, priority = null, prediction = null) {
+export async function getPredictions(page = 1, pageSize = 20, priority = null, prediction = null, batchId = null) {
   let path = `/predictions?page=${page}&page_size=${pageSize}`;
-  if (priority && priority !== 'ALL') path += `&priority=${priority}`;
-  if (prediction && prediction !== 'ALL') path += `&prediction=${prediction}`;
+  if (priority && priority !== 'ALL') path += `&priority=${encodeURIComponent(priority)}`;
+  if (prediction && prediction !== 'ALL') path += `&prediction=${encodeURIComponent(prediction)}`;
+  if (batchId) path += `&batch_id=${encodeURIComponent(batchId)}`;
   return apiRequest(path, {}, 10000);
 }
 

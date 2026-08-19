@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { getPredictions } from '../api';
 import { SeverityBadge, PredictionBadge } from './OverviewDashboard';
 
-export default function AnomaliesPage({ onSelectRecord, refreshTrigger }) {
+export default function AnomaliesPage({ onSelectRecord, refreshTrigger, selectedBatchId }) {
   const [predictions, setPredictions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -13,10 +13,10 @@ export default function AnomaliesPage({ onSelectRecord, refreshTrigger }) {
   const [predictionFilter, setPredictionFilter] = useState('ALL');
   const [searchTerm, setSearchTerm] = useState('');
 
-  const loadData = useCallback(async (p = page, prio = priorityFilter, pred = predictionFilter) => {
+  const loadData = useCallback(async (p = page, prio = priorityFilter, pred = predictionFilter, bId = selectedBatchId) => {
     setLoading(true);
     setError(null);
-    const res = await getPredictions(p, 20, prio !== 'ALL' ? prio : null, pred !== 'ALL' ? pred : null);
+    const res = await getPredictions(p, 20, prio !== 'ALL' ? prio : null, pred !== 'ALL' ? pred : null, bId);
     if (res.ok) {
       setPredictions(res.data.items || []);
       setTotal(res.data.total || 0);
@@ -25,11 +25,11 @@ export default function AnomaliesPage({ onSelectRecord, refreshTrigger }) {
       setError(res.error);
     }
     setLoading(false);
-  }, []);
+  }, [selectedBatchId]);
 
   useEffect(() => {
-    loadData(1, priorityFilter, predictionFilter);
-  }, [refreshTrigger]);
+    loadData(1, priorityFilter, predictionFilter, selectedBatchId);
+  }, [refreshTrigger, selectedBatchId]);
 
   const handlePriorityChange = (prio) => {
     setPriorityFilter(prio);
