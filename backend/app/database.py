@@ -43,10 +43,17 @@ def normalize_postgres_url(url: str) -> str:
 
 
 def create_db_engine(url: str):
-    """Create PostgreSQL SQLAlchemy engine with connection pooling and timeouts."""
-    normalized_url = normalize_postgres_url(url)
+    """Create SQLAlchemy engine with connection pooling and timeouts for PostgreSQL or SQLite."""
+    cleaned = url.strip()
+    if cleaned.startswith("sqlite"):
+        return create_engine(
+            cleaned,
+            connect_args={"check_same_thread": False},
+            echo=False
+        )
+    normalized_url = normalize_postgres_url(cleaned)
     if not (normalized_url.startswith("postgresql://") or normalized_url.startswith("postgresql+")):
-        raise ValueError(f"Invalid DATABASE_URL scheme for '{url}'. PostgreSQL is exclusively supported.")
+        raise ValueError(f"Invalid DATABASE_URL scheme for '{url}'. Supported schemes are postgresql and sqlite.")
 
     return create_engine(
         normalized_url,
@@ -58,7 +65,7 @@ def create_db_engine(url: str):
     )
 
 
-# Initialize PostgreSQL engine & SessionLocal
+# Initialize database engine & SessionLocal
 engine = create_db_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -322,8 +329,18 @@ def set_audit_cache(db: Session, report_type: str, data: Dict[str, Any], source_
 
 
 def init_db():
-    """Initialize database tables."""
-    Base.metadata.create_all(bind=engine)
+    """Initialize database tables, falling back to SQLite if PostgreSQL is unreachable."""
+    global engine, SessionLocal
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as err:
+        if not os.getenv("DATABASE_URL") or "localhost:5432" in str(engine.url) or "127.0.0.1:5432" in str(engine.url):
+            print(f"[Database] PostgreSQL unavailable ({err}). Falling back to local SQLite database (final_anomaly.db)...")
+            engine = create_engine("sqlite:///final_anomaly.db", connect_args={"check_same_thread": False})
+            SessionLocal.configure(bind=engine)
+            Base.metadata.create_all(bind=engine)
+        else:
+            raise err
 
 
 

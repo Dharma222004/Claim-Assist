@@ -10,14 +10,14 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import (
     Base, AuthorizationRecord, save_authorization_record,
-    create_db_engine, DATABASE_URL, engine, SessionLocal
+    create_db_engine, DATABASE_URL, engine, SessionLocal, init_db
 )
 
 
 @pytest.fixture
 def db_session():
-    """Provide a clean PostgreSQL database session for testing, with automatic test record cleanup."""
-    Base.metadata.create_all(bind=engine)
+    """Provide a clean database session for testing, with automatic test record cleanup."""
+    init_db()
     session = SessionLocal()
     yield session
     # Cleanup test records created during testing
@@ -34,18 +34,22 @@ def db_session():
 
 
 def test_db_engine_creation_and_url_handling():
-    """Verify PostgreSQL engine creation and rejection of unsupported SQLite/other schemes."""
-    pg_url = DATABASE_URL
+    """Verify PostgreSQL & SQLite engine creation and rejection of unsupported schemes."""
+    pg_url = "postgresql+psycopg://postgres:password@localhost:5432/final_anomaly"
     pg_eng = create_db_engine(pg_url)
     assert pg_eng.name == "postgresql"
     assert "psycopg" in pg_eng.driver
 
-    # Reject non-PostgreSQL schemas
+    # Test SQLite engine creation
+    sqlite_eng = create_db_engine("sqlite:///test.db")
+    assert sqlite_eng.name == "sqlite"
+
+    # Reject unsupported schemas
     with pytest.raises(ValueError, match="Invalid DATABASE_URL scheme"):
-        create_db_engine("sqlite:///:memory:")
+        create_db_engine("mysql://root:password@localhost:3306/db")
 
     with pytest.raises(ValueError, match="Invalid DATABASE_URL scheme"):
-        create_db_engine("sqlite:///some_local.db")
+        create_db_engine("redis://localhost:6379")
 
 
 def test_database_save_and_retrieve(db_session):

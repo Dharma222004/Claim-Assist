@@ -13,12 +13,12 @@ PROJECT_ROOT = SYSTEM_DIR.parent
 # Check candidate raw directory locations
 RAW_CANDIDATES = [
     Path(os.getenv("RAW_CMS_DIR")) if os.getenv("RAW_CMS_DIR") else None,
-    PROJECT_ROOT / "raw",
     SYSTEM_DIR / "raw",
-    Path("c:/Users/VICTUS/Desktop/Anomoly_detection/raw")
+    BACKEND_DIR / "raw",
+    PROJECT_ROOT / "raw",
 ]
 
-DEFAULT_RAW_DIR = Path("c:/Users/VICTUS/Desktop/Anomoly_detection/raw")
+DEFAULT_RAW_DIR = SYSTEM_DIR / "raw"
 for cand in RAW_CANDIDATES:
     if cand and cand.exists():
         DEFAULT_RAW_DIR = cand
