@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component } from 'react';
-import { WS_URL } from './config';
+import { API_BASE_URL, WS_URL } from './config';
 import { getStats, getDataQualityReport } from './api';
 
 import OverviewDashboard from './components/OverviewDashboard';
@@ -240,7 +240,7 @@ export default function App() {
               <div>
                 <div style={{ fontWeight: 600, color: 'var(--critical)', fontSize: 14 }}>Backend unavailable</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                  Unable to connect to FastAPI at http://127.0.0.1:8000 — {statsError}
+                  Unable to connect to backend at {API_BASE_URL} — {statsError}
                 </div>
               </div>
               <button className="btn btn--danger btn--small" onClick={handleRefresh}>Retry</button>
